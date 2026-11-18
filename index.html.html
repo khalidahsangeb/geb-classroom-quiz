@@ -1,0 +1,1118 @@
+
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>GEB Sequential MCQ Quiz</title>
+
+  <style>
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: Arial, sans-serif;
+      background: #f1f4f8;
+      margin: 0;
+      padding: 18px;
+    }
+
+    .container {
+      max-width: 560px;
+      margin: 20px auto;
+      background: white;
+      padding: 25px;
+      border-radius: 14px;
+      box-shadow: 0 3px 16px rgba(0,0,0,.08);
+    }
+
+    h2 {
+      color: #17365d;
+    }
+
+    .muted {
+      color: #667085;
+      font-size: 14px;
+    }
+
+    input[type="text"] {
+      width: 100%;
+      padding: 14px;
+      border: 1px solid #ccc;
+      border-radius: 8px;
+      font-size: 16px;
+      margin: 10px 0;
+    }
+
+    button {
+      width: 100%;
+      padding: 14px;
+      border: none;
+      border-radius: 8px;
+      background: #1769aa;
+      color: white;
+      font-size: 17px;
+      cursor: pointer;
+      margin-top: 12px;
+    }
+
+    button:disabled {
+      background: #999;
+      cursor: not-allowed;
+    }
+
+    .timer {
+      font-size: 38px;
+      font-weight: bold;
+      text-align: center;
+      margin: 20px 0;
+      color: #1769aa;
+    }
+
+    .progress {
+      height: 8px;
+      background: #e5e7eb;
+      border-radius: 10px;
+      overflow: hidden;
+      margin: 12px 0 20px;
+    }
+
+    .progress-bar {
+      height: 100%;
+      background: #1769aa;
+      width: 0%;
+      transition: width .1s linear;
+    }
+
+    .option {
+      display: block;
+      padding: 15px;
+      border: 1px solid #ddd;
+      border-radius: 8px;
+      margin: 10px 0;
+      cursor: pointer;
+      line-height: 1.4;
+    }
+
+    .option:has(input:checked) {
+      background: #eaf3fb;
+      border-color: #1769aa;
+    }
+
+    .option input {
+      margin-right: 9px;
+    }
+
+    .status {
+      background: #f0f3f7;
+      padding: 14px;
+      border-radius: 8px;
+      margin-top: 18px;
+      line-height: 1.5;
+    }
+
+    .center {
+      text-align: center;
+    }
+
+    .question-number {
+      color: #1769aa;
+      font-weight: bold;
+      font-size: 14px;
+    }
+
+    .hidden {
+      display: none;
+    }
+  </style>
+</head>
+
+<body>
+
+<div class="container">
+
+  <h2>GEB Classroom Quiz</h2>
+  <p class="muted">East West University</p>
+
+  <div id="timer" class="timer">--</div>
+
+  <div class="progress">
+    <div id="progressBar" class="progress-bar"></div>
+  </div>
+
+  <div id="mainArea">
+    <p>Connecting to quiz server...</p>
+  </div>
+
+  <div id="status" class="status">
+    Please wait...
+  </div>
+
+</div>
+
+<iframe name="postFrame" class="hidden"></iframe>
+
+<script>
+
+// ==================================================
+// CONFIGURATION
+// ==================================================
+
+const WEB_APP_URL =
+  "https://script.google.com/macros/s/AKfycbzkfPba4PBOVWBe8gPpDy8NsWTVAEGa-GCQ2UJccb_Fuq4ITr24PEkyQZ1OPOuy9gQZbQ/exec";
+
+// Server state polling interval
+const STATE_POLL_INTERVAL = 2000;
+
+// Countdown display refresh interval
+const COUNTDOWN_INTERVAL = 100;
+
+// Request status polling interval
+const REQUEST_POLL_INTERVAL = 1000;
+
+
+// ==================================================
+// GLOBAL VARIABLES
+// ==================================================
+
+let activeTimerQuestionNo = null;
+let quizId = null;
+let studentId = null;
+
+let currentQuestion = null;
+
+let stateTimer = null;
+let countdownTimer = null;
+let requestTimer = null;
+
+let activeDeadline = null;
+let renderedQuestionNo = null;
+let acknowledgedQuestionNo = null;
+let lastAcknowledgementTime = 0;
+
+let currentRequestId = null;
+
+let busy = false;
+let requestAttempts = 0;
+let currentView = "";
+
+const mainArea = document.getElementById("mainArea");
+const statusBox = document.getElementById("status");
+const timerBox = document.getElementById("timer");
+const progressBar = document.getElementById("progressBar");
+
+
+// ==================================================
+// UTILITY FUNCTIONS
+// ==================================================
+
+function newRequestId() {
+
+  return Date.now().toString() +
+    Math.random().toString(36).substring(2, 12);
+
+}
+
+function escapeHTML(value) {
+
+  return String(value).replace(/[&<>"']/g, function(c) {
+
+    return {
+      "&": "&amp;",
+      "<": "&lt;",
+      ">": "&gt;",
+      '"': "&quot;",
+      "'": "&#39;"
+    }[c];
+
+  });
+
+}
+
+
+// ==================================================
+// JSONP COMMUNICATION
+// ==================================================
+
+function jsonp(params, callback) {
+
+  const callbackName =
+    "geb_" + Date.now() +
+    "_" + Math.floor(Math.random() * 1000000);
+
+  const script = document.createElement("script");
+
+  let finished = false;
+
+  const timeout = setTimeout(function() {
+
+    if (finished) return;
+
+    finished = true;
+
+    delete window[callbackName];
+    script.remove();
+
+  }, 10000);
+
+  window[callbackName] = function(data) {
+
+    if (finished) return;
+
+    finished = true;
+
+    clearTimeout(timeout);
+
+    try {
+      callback(data);
+    } finally {
+      delete window[callbackName];
+      script.remove();
+    }
+
+  };
+
+  script.onerror = function() {
+
+    if (finished) return;
+
+    finished = true;
+
+    clearTimeout(timeout);
+
+    delete window[callbackName];
+    script.remove();
+
+  };
+
+  const query = new URLSearchParams({
+    ...params,
+    callback: callbackName
+  });
+
+  script.src =
+    WEB_APP_URL + "?" + query.toString();
+
+  document.body.appendChild(script);
+
+}
+
+
+// ==================================================
+// POST COMMUNICATION
+// ==================================================
+
+function postData(fields) {
+
+  const form = document.createElement("form");
+
+  form.method = "POST";
+  form.action = WEB_APP_URL;
+  form.target = "postFrame";
+
+  Object.keys(fields).forEach(function(key) {
+
+    const input = document.createElement("input");
+
+    input.type = "hidden";
+    input.name = key;
+    input.value = fields[key];
+
+    form.appendChild(input);
+
+  });
+
+  document.body.appendChild(form);
+
+  form.submit();
+
+  form.remove();
+
+}
+
+
+// ==================================================
+// LOAD ACTIVE QUIZ
+// ==================================================
+
+function loadQuiz() {
+
+  jsonp({ action: "quiz" }, function(data) {
+
+    if (data.status !== "active") {
+
+      currentView = "no_quiz";
+
+      mainArea.innerHTML = `
+        <div class="center">
+          <h3>No active quiz</h3>
+          <p>Please wait for your instructor.</p>
+        </div>
+      `;
+
+      timerBox.textContent = "--";
+
+      statusBox.textContent =
+        "Waiting for an active quiz.";
+
+      return;
+
+    }
+
+    quizId = data.quizId;
+
+    const saved =
+      sessionStorage.getItem("gebQuizSession");
+
+    if (saved) {
+
+      try {
+
+        const session = JSON.parse(saved);
+
+        if (session.quizId === quizId) {
+
+          studentId = session.studentId;
+
+          startStatePolling();
+
+          return;
+
+        }
+
+      } catch (e) {}
+
+    }
+
+    showIDForm();
+
+  });
+
+}
+
+
+// ==================================================
+// STUDENT ID FORM
+// ==================================================
+
+function showIDForm() {
+
+  currentView = "id_form";
+
+  mainArea.innerHTML = `
+
+    <h3>Enter your Student ID</h3>
+
+    <p class="muted">
+      Enter your ID once to participate in the quiz.
+    </p>
+
+    <form id="idForm">
+
+      <input
+        type="text"
+        id="studentIdInput"
+        placeholder="1234-5-67-890"
+        maxlength="13"
+        inputmode="numeric"
+        autocomplete="off"
+        pattern="[0-9]{4}-[0-9]-[0-9]{2}-[0-9]{3}"
+        title="Student ID must be in the format 1234-5-67-890"
+        aria-label="Student ID in the format 1234-5-67-890"
+        required
+      >
+
+      <button type="submit" id="joinBtn">
+        Start Quiz
+      </button>
+
+    </form>
+
+  `;
+
+  const studentIdInput = document.getElementById("studentIdInput");
+
+  // Automatically format the ID as NNNN-N-NN-NNN.
+  studentIdInput.addEventListener("input", function() {
+    const digits = this.value.replace(/\D/g, "").slice(0, 10);
+
+    let formatted = digits.slice(0, 4);
+    if (digits.length > 4) formatted += "-" + digits.slice(4, 5);
+    if (digits.length > 5) formatted += "-" + digits.slice(5, 7);
+    if (digits.length > 7) formatted += "-" + digits.slice(7, 10);
+
+    this.value = formatted;
+  });
+
+  document.getElementById("idForm")
+    .addEventListener("submit", joinQuiz);
+
+  timerBox.textContent = "--";
+
+  progressBar.style.width = "0%";
+
+  statusBox.textContent =
+    "Enter your Student ID to begin.";
+
+}
+
+
+// ==================================================
+// REGISTER STUDENT
+// ==================================================
+
+function joinQuiz(event) {
+
+  event.preventDefault();
+
+  if (busy) return;
+
+  const id = document.getElementById("studentIdInput")
+    .value.trim();
+
+  if (!id) {
+    alert("Please enter your Student ID.");
+    return;
+  }
+
+  // Require exactly NNNN-N-NN-NNN (10 digits).
+  if (!/^[0-9]{4}-[0-9]-[0-9]{2}-[0-9]{3}$/.test(id)) {
+    alert("Invalid Student ID. Please use the format: 1234-5-67-890");
+    document.getElementById("studentIdInput").focus();
+    return;
+  }
+
+  busy = true;
+
+  studentId = id;
+
+  currentRequestId = newRequestId();
+
+  document.getElementById("joinBtn").disabled = true;
+
+  statusBox.textContent =
+    "Registering your Student ID...";
+
+  postData({
+
+    action: "join",
+    quizId: quizId,
+    studentId: studentId,
+    requestId: currentRequestId
+
+  });
+
+  checkRequest(currentRequestId, "join");
+
+}
+
+
+// ==================================================
+// CHECK POST REQUEST RESULT
+// ==================================================
+
+function checkRequest(requestId, action) {
+
+  clearInterval(requestTimer);
+
+  requestAttempts = 0;
+
+  requestTimer = setInterval(function() {
+
+    requestAttempts++;
+
+    jsonp({
+
+      action: "requestStatus",
+      requestId: requestId
+
+    }, function(data) {
+
+      if (data.status === "pending") {
+        return;
+      }
+
+      clearInterval(requestTimer);
+
+      busy = false;
+
+      if (data.status === "accepted") {
+
+        if (action === "join") {
+
+          sessionStorage.setItem(
+            "gebQuizSession",
+            JSON.stringify({
+
+              quizId: quizId,
+              studentId: studentId
+
+            })
+          );
+
+          statusBox.textContent =
+            "Registration successful. Get ready!";
+
+          startStatePolling();
+
+        }
+
+        else if (action === "answer") {
+
+          if (data.completed) {
+
+            showCompleted();
+
+          } else {
+
+            statusBox.textContent =
+              "Answer recorded. Loading next question...";
+
+            loadStudentState();
+
+          }
+
+        }
+
+      }
+
+      else {
+
+        statusBox.textContent =
+          data.message || "Request rejected.";
+
+        if (action === "join") {
+
+          showIDForm();
+
+        } else {
+
+          loadStudentState();
+
+        }
+
+      }
+
+    });
+
+    if (requestAttempts >= 15) {
+
+      clearInterval(requestTimer);
+
+      busy = false;
+
+      statusBox.textContent =
+        "Server response is delayed. Please check your connection.";
+
+    }
+
+  }, REQUEST_POLL_INTERVAL);
+
+}
+
+
+// ==================================================
+// START SERVER STATE POLLING
+// ==================================================
+
+function startStatePolling() {
+
+  clearInterval(stateTimer);
+
+  loadStudentState();
+
+  stateTimer = setInterval(function() {
+
+    if (!busy) {
+      loadStudentState();
+    }
+
+  }, STATE_POLL_INTERVAL);
+
+}
+
+
+// ==================================================
+// LOAD STUDENT STATE
+// ==================================================
+
+function loadStudentState() {
+
+  if (!quizId || !studentId) return;
+
+  jsonp({
+
+    action: "state",
+    quizId: quizId,
+    studentId: studentId
+
+  }, function(data) {
+
+    // Initial waiting period
+    if (data.status === "waiting") {
+
+      showWaiting(data);
+
+    }
+
+    // Question is ready, but server timer has not started
+    
+    else if (data.status === "question") {
+
+      if (renderedQuestionNo !== data.questionNumber) {
+
+        currentQuestion = data;
+
+        showQuestion(data);
+
+      }
+
+      currentQuestion = data;
+
+      updateQuestionTimer(data);
+
+      acknowledgedQuestionNo = data.questionNumber;
+
+     }
+
+
+    // Server has started the question timer
+    else if (data.status === "question") {
+
+      if (
+        renderedQuestionNo !== data.questionNumber
+      ) {
+
+        currentQuestion = data;
+
+        showQuestion(data);
+
+      }
+
+      currentQuestion = data;
+
+      updateQuestionTimer(data);
+
+      acknowledgedQuestionNo = data.questionNumber;
+
+    }
+
+    // Quiz completed
+    else if (data.status === "completed") {
+
+      showCompleted();
+
+    }
+
+    else if (data.status === "not_joined") {
+
+      sessionStorage.removeItem("gebQuizSession");
+
+      showIDForm();
+
+    }
+
+    else if (data.status === "error") {
+
+      statusBox.textContent = data.message;
+
+    }
+
+  });
+
+}
+
+
+// ==================================================
+// WAITING SCREEN
+// ==================================================
+
+function showWaiting(data) {
+
+  if (currentView !== "waiting") {
+
+    currentView = "waiting";
+
+    renderedQuestionNo = null;
+
+    currentQuestion = null;
+
+    clearInterval(countdownTimer);
+
+    activeDeadline = null;
+
+    mainArea.innerHTML = `
+
+      <div class="center">
+
+        <h3>Registration successful!</h3>
+
+        <p>Your first question will appear shortly.</p>
+
+        <p class="muted">
+          Please wait for the countdown.
+        </p>
+
+      </div>
+
+    `;
+
+  }
+
+  timerBox.textContent =
+    String(data.remaining).padStart(2, "0");
+
+  progressBar.style.width = "0%";
+
+  statusBox.textContent =
+    "The quiz will begin automatically.";
+
+}
+
+
+// ==================================================
+// DISPLAY QUESTION
+// ==================================================
+
+function showQuestion(data) {
+
+  clearInterval(countdownTimer);
+
+  activeDeadline = null;
+
+  activeTimerQuestionNo = null;
+
+  renderedQuestionNo = data.questionNumber;
+
+  currentView = "question";
+
+  acknowledgedQuestionNo = null;
+
+  const optionsHTML = data.options.map(function(option) {
+
+    return `
+
+      <label class="option">
+
+        <input
+          type="radio"
+          name="answer"
+          value="${escapeHTML(option)}"
+          required
+        >
+
+        ${escapeHTML(option)}
+
+      </label>
+
+    `;
+
+  }).join("");
+
+  mainArea.innerHTML = `
+
+    <div class="question-number">
+
+      QUESTION ${data.questionNumber}
+      OF ${data.totalQuestions}
+
+    </div>
+
+    <h3>${escapeHTML(data.question)}</h3>
+
+    <form id="answerForm">
+
+      ${optionsHTML}
+
+      <button type="submit" id="answerBtn" disabled>
+
+        Submit Answer
+
+      </button>
+
+    </form>
+
+  `;
+
+  document.getElementById("answerForm")
+    .addEventListener("submit", submitAnswer);
+
+  // Button is enabled only after server starts timer.
+  timerBox.textContent = "15";
+
+  progressBar.style.width = "0%";
+
+  statusBox.textContent =
+    "Preparing your question timer...";
+
+}
+
+
+// ==================================================
+// ACKNOWLEDGE QUESTION DISPLAY
+// ==================================================
+
+function acknowledgeQuestion(questionNumber) {
+
+  if (busy) return;
+
+  if (acknowledgedQuestionNo === questionNumber) {
+
+    const now = Date.now();
+
+    // Retry acknowledgement if server response is delayed
+    if (now - lastAcknowledgementTime < 2000) {
+      return;
+    }
+
+  }
+
+  acknowledgedQuestionNo = questionNumber;
+
+  lastAcknowledgementTime = Date.now();
+
+  postData({
+
+    action: "startQuestion",
+    quizId: quizId,
+    studentId: studentId,
+    questionNumber: questionNumber
+
+  });
+
+}
+
+
+// ==================================================
+// QUESTION COUNTDOWN
+// ==================================================
+
+function startCountdown(deadline) {
+
+  // Do not restart the timer on every server poll
+  if (activeDeadline === deadline && countdownTimer) {
+    return;
+  }
+
+  clearInterval(countdownTimer);
+
+  activeDeadline = deadline;
+
+  function tick() {
+
+    const remaining = Math.max(
+
+      0,
+
+      Math.ceil(
+        (deadline - Date.now()) / 1000
+      )
+
+    );
+
+    timerBox.textContent =
+      String(remaining).padStart(2, "0");
+
+    const elapsedPercent = Math.max(
+
+      0,
+
+      Math.min(
+        100,
+        ((15 - remaining) / 15) * 100
+      )
+
+    );
+
+    progressBar.style.width =
+      elapsedPercent + "%";
+
+    if (remaining > 0) {
+
+      document.getElementById("answerBtn")
+        ?.removeAttribute("disabled");
+
+    } else {
+
+      clearInterval(countdownTimer);
+
+      countdownTimer = null;
+
+      timerBox.textContent = "00";
+
+      document.getElementById("answerBtn")
+        ?.setAttribute("disabled", "disabled");
+
+      statusBox.textContent =
+        "Time expired. Waiting for the next question...";
+
+    }
+
+  }
+
+  tick();
+
+  countdownTimer = setInterval(
+    tick,
+    COUNTDOWN_INTERVAL
+  );
+
+}
+
+
+
+function updateQuestionTimer(data) {
+
+  console.log("SERVER QUESTION RESPONSE:", data);
+  console.log("Server remaining:", data.remaining);
+
+  if (
+    data.remaining === undefined ||
+    !Number.isFinite(Number(data.remaining))
+  ) {
+    console.error("Invalid remaining time:", data);
+    return;
+  }
+
+  // Do not restart countdown on every server poll
+  if (
+    activeTimerQuestionNo === data.questionNumber &&
+    countdownTimer
+  ) {
+    return;
+  }
+
+  activeTimerQuestionNo = data.questionNumber;
+
+  const remaining = Math.max(
+    0,
+    Number(data.remaining)
+  );
+
+  // Convert server remaining time into a local browser deadline
+  const localDeadline =
+    Date.now() + remaining * 1000;
+
+  startCountdown(localDeadline);
+}
+
+
+
+// ==================================================
+// SUBMIT ANSWER
+// ==================================================
+
+
+function submitAnswer(event) {
+
+  event.preventDefault();
+
+  if (busy || !currentQuestion) return;
+
+  const selected = document.querySelector(
+    'input[name="answer"]:checked'
+  );
+
+  if (!selected) {
+    alert("Please select an answer.");
+    return;
+  }
+
+  // Use the synchronized local deadline
+  if (
+    !activeDeadline ||
+    Date.now() >= activeDeadline
+  ) {
+
+    statusBox.textContent =
+      "Time expired. Your answer cannot be submitted.";
+
+    return;
+  }
+
+  busy = true;
+
+  const requestId = newRequestId();
+
+  statusBox.textContent =
+    "Submitting your answer...";
+
+  document.getElementById("answerBtn").disabled = true;
+
+  postData({
+
+    action: "answer",
+    quizId: quizId,
+    studentId: studentId,
+
+    questionNumber:
+      currentQuestion.questionNumber,
+
+    answer: selected.value,
+
+    requestId: requestId
+
+  });
+
+  checkRequest(requestId, "answer");
+
+}
+
+
+
+// ==================================================
+// QUIZ COMPLETED
+// ==================================================
+
+function showCompleted() {
+
+  clearInterval(stateTimer);
+
+  clearInterval(countdownTimer);
+
+  clearInterval(requestTimer);
+
+  currentQuestion = null;
+
+  activeDeadline = null;
+
+  busy = false;
+
+  currentView = "completed";
+
+  timerBox.textContent = "DONE";
+
+  progressBar.style.width = "100%";
+
+  mainArea.innerHTML = `
+
+    <div class="center">
+
+      <h2>Quiz Completed!</h2>
+
+      <p>Thank you for participating.</p>
+
+    </div>
+
+  `;
+
+  statusBox.textContent =
+    "Your quiz session has ended.";
+
+  sessionStorage.removeItem("gebQuizSession");
+
+}
+
+
+// ==================================================
+// INITIALIZE
+// ==================================================
+
+loadQuiz();
+
+</script>
+
+</body>
+</html>
+
